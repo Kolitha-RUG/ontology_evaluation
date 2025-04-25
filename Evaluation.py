@@ -1,63 +1,202 @@
-from rdflib import Graph, RDF, RDFS, OWL
-from collections import defaultdict
+from rdflib import Graph, RDF, RDFS, OWL, URIRef
+from collections import defaultdict, deque
 
-g = Graph()
-g.parse("csws.ttl", format="ttl") 
+# --- Load Graph ---
+def load_graph(ttl_path):
+    g = Graph()
+    g.parse(ttl_path, format='turtle')
+    return g
 
-classes = set(g.subjects(RDF.type, OWL.Class))
-instances = set(g.subjects(RDF.type, None)) - classes  # Individuals, not classes
+# --- Extract Schema and KB Elements ---
+def extract_elements(g):
+    # Classes and Instances
+    classes = set(g.subjects(RDF.type, OWL.Class)) \
+              | set(g.subjects(RDF.type, RDFS.Class))
+    all_typed = set(g.subjects(RDF.type, None))
+    instances = all_typed - classes
 
-subclasses = set(g.triples((None, RDFS.subClassOf, None)))
-num_subclasses = len(subclasses)
+    # Subclass axioms 
+    subclass_triples = [
+        (s, o) for s, o in g.subject_objects(RDFS.subClassOf)
+        if s in classes and o in classes
+    ]
+    num_subclasses = len(subclass_triples)
 
-object_properties = set(g.subjects(RDF.type, OWL.ObjectProperty))
-num_object_properties = len(object_properties)
+    # Non-inheritance class-to-class relationships
+    noninherit_rels = set(
+        (s, p, o)
+        for s, p, o in g.triples((None, None, None))
+        if s in classes
+        and isinstance(o, URIRef) and o in classes
+        and p != RDFS.subClassOf
+    )
+    num_noninherit = len(noninherit_rels)
 
-data_properties = set(g.subjects(RDF.type, OWL.DatatypeProperty))
-num_data_properties = len(data_properties)
+    # Object and Data Properties
+    obj_props = set(g.subjects(RDF.type, OWL.ObjectProperty))
+    data_props = set(g.subjects(RDF.type, OWL.DatatypeProperty))
 
-# Classes with at least one instance
-class_instances = defaultdict(int)
-for s in instances:
-    for o in g.objects(s, RDF.type):
-        if o in classes:
-            class_instances[o] += 1
+    # Map of instances per class
+    class_instances = defaultdict(int)
+    for inst in instances:
+        for cls in g.objects(inst, RDF.type):
+            if cls in classes:
+                class_instances[cls] += 1
 
-# --------------------------------------------------
-# 1. Schema Metrics
-# --------------------------------------------------
+    return {
+        'classes': classes,
+        'instances': instances,
+        'obj_props': obj_props,
+        'data_props': data_props,
+        'num_subclasses': num_subclasses,
+        'num_noninherit': num_noninherit,
+        'class_instances': class_instances
+    }
 
-# Relationship Richness (RR)
-RR = num_object_properties / (num_object_properties + num_subclasses)
+# --- Schema Metrics ---
+def relationship_richness(num_noninherit, num_subclasses):
+    total = num_noninherit + num_subclasses
+    return (num_noninherit / total) if total > 0 else 0
 
-# Inheritance Richness (IR)
-IR = num_subclasses / len(classes) 
+def inheritance_richness(num_subclasses, num_classes):
+    return num_subclasses / num_classes if num_classes > 0 else 0
 
-# Attribute Richness (AR)
-AR = num_data_properties / len(classes)
+def attribute_richness(num_data_props, num_classes):
+    return num_data_props / num_classes if num_classes > 0 else 0
 
-# --------------------------------------------------
-# 2. Knowledge Base Metrics
-# --------------------------------------------------
-
-# Class Richness (CR)
-CR = len(class_instances) / len(classes) if len(classes) > 0 else 0
-
-# Class Connectivity (Conn)
-# Count non-inheritance instance-to-instance links
-def class_connectivity(ci):
-    count = 0
-    for s in g.subjects(RDF.type, ci):
-        for p, o in g.predicate_objects(subject=s):
-            if (o, RDF.type, None) in g: 
-                count += 1
-    return count
+# --- Knowledge Base Metrics ---
+def class_richness(num_classes, class_instances):
+    non_empty = len([c for c, count in class_instances.items() if count > 0])
+    return non_empty / num_classes if num_classes > 0 else 0
 
 
-print("\n--- Schema Metrics ---")
-print(f"Relationship Richness (RR): {RR:.3f}")
-print(f"Inheritance Richness (IR): {IR:.3f}")
-print(f"Attribute Richness (AR): {AR:.3f}")
+def class_connectivity(g, classes):
+    connectivity = {}
+    for cls in classes:
+        total_links = 0
+        for inst in g.subjects(RDF.type, cls):
+            for p, o in g.predicate_objects(inst):
+                if isinstance(o, URIRef) and (o, RDF.type, None) in g:
+                    total_links += 1
+        connectivity[cls] = total_links
+    return connectivity
 
-print("\n--- Knowledgebase Metrics ---")
-print(f"Class Richness (CR): {CR:.3f}")
+
+def class_importance(g, classes, class_instances):
+    # Build subclass map
+    subclass_map = defaultdict(list)
+    for s, o in g.subject_objects(RDFS.subClassOf):
+        if s in classes and o in classes:
+            subclass_map[o].append(s)
+    total_instances = sum(class_instances.values())
+    importance = {}
+    for cls in classes:
+        # Gather all subclasses (including self)
+        queue = deque([cls])
+        subtree = set()
+        while queue:
+            c = queue.popleft()
+            if c not in subtree:
+                subtree.add(c)
+                queue.extend(subclass_map.get(c, []))
+        inst_count = sum(class_instances.get(c, 0) for c in subtree)
+        importance[cls] = (inst_count / total_instances) if total_instances > 0 else 0
+    return importance
+
+
+def cohesion(g, instances, obj_props):
+    # Build undirected adjacency among instances via object properties
+    adj = defaultdict(set)
+    for s, p, o in g.triples((None, None, None)):
+        if p in obj_props and s in instances and isinstance(o, URIRef) and o in instances:
+            adj[s].add(o)
+            adj[o].add(s)
+    visited = set()
+    components = 0
+    for inst in instances:
+        if inst not in visited:
+            components += 1
+            # BFS
+            queue = [inst]
+            visited.add(inst)
+            while queue:
+                curr = queue.pop()
+                for nbr in adj[curr]:
+                    if nbr not in visited:
+                        visited.add(nbr)
+                        queue.append(nbr)
+    return components
+
+
+def per_class_relationship_richness(g, classes, obj_props):
+    # Schema-level prop count per class (domain declarations)
+    schema_props = defaultdict(set)
+    for p in obj_props:
+        for d in g.objects(p, RDFS.domain):
+            if d in classes:
+                schema_props[d].add(p)
+    # Instance-level prop usage per class
+    inst_usage = defaultdict(set)
+    for cls in classes:
+        for inst in g.subjects(RDF.type, cls):
+            for p, o in g.predicate_objects(inst):
+                if p in obj_props:
+                    inst_usage[cls].add(p)
+    # Compute ratio
+    per_rr = {}
+    for cls in classes:
+        defined = schema_props.get(cls, set())
+        used = inst_usage.get(cls, set())
+        per_rr[cls] = (len(used) / len(defined)) if defined else 0
+    return per_rr
+
+# --- Main Script ---
+if __name__ == '__main__':
+    ttl_file = 'sws.ttl'
+    g = load_graph(ttl_file)
+    elems = extract_elements(g)
+
+    C = len(elems['classes'])
+    SC = elems['num_subclasses']
+    NI = elems['num_noninherit']
+    DP = len(elems['data_props'])
+
+    # Schema Metrics
+    RR = relationship_richness(NI, SC)
+    IR = inheritance_richness(SC, C)
+    AR = attribute_richness(DP, C)
+
+    # KB Metrics
+    CR = class_richness(C, elems['class_instances'])
+    conn = class_connectivity(g, elems['classes'])
+    imp = class_importance(g, elems['classes'], elems['class_instances'])
+    coh = cohesion(g, elems['instances'], elems['obj_props'])
+    per_rr = per_class_relationship_richness(g, elems['classes'], elems['obj_props'])
+
+    # Output
+    print(f"Classes: {C}")
+    print(f"Subclass axioms: {SC}")
+    print(f"Non-inheritance relations: {NI}")
+    print(f"Data properties: {DP}")
+    print(f"Instances: {len(elems['instances'])}\n")
+
+    print("--- Schema Metrics ---")
+    print(f"Relationship Richness (RR): {RR:.3f}")
+    print(f"Inheritance Richness (IR): {IR:.3f}")
+    print(f"Attribute Richness (AR): {AR:.3f}\n")
+
+    print("--- Knowledge Base Metrics ---")
+    print(f"Class Richness (CR): {CR:.3f}")
+    print(f"Cohesion (connected components): {coh}\n")
+
+    print("--- Class Connectivity (top 5) ---")
+    for cls, links in sorted(conn.items(), key=lambda x: x[1], reverse=True)[:5]:
+        print(f"{cls}: {links}")
+
+    print("\n--- Class Importance (top 5) ---")
+    for cls, val in sorted(imp.items(), key=lambda x: x[1], reverse=True)[:5]:
+        print(f"{cls}: {val:.3f}")
+
+    print("\n--- Per-Class Relationship Richness (top 5) ---")
+    for cls, val in sorted(per_rr.items(), key=lambda x: x[1], reverse=True)[:5]:
+        print(f"{cls}: {val:.3f}")
