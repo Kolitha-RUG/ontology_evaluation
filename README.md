@@ -5,7 +5,7 @@
 ### SWS
 
 **Schema Metrics**  
-- **Relationship Richness (RR):** 0.033 
+- **Relationship Richness (RR):** 0.613
 - **Inheritance Richness (IR):** 0.817  
 - **Attribute Richness (AR):** 0.211  
 
@@ -16,7 +16,7 @@
 ### CSWS
 
 **Schema Metrics**  
-- **Relationship Richness (RR):** 0.043
+- **Relationship Richness (RR):** 0.735
 - **Inheritance Richness (IR):** 0.83
 - **Attribute Richness (AR):** 0.198 
 
