@@ -152,7 +152,7 @@ def per_class_relationship_richness(g, classes, obj_props):
 
 # --- Main Script ---
 if __name__ == '__main__':
-    ttl_file = 'sws.ttl'
+    ttl_file = 'csws.ttl'
     g = load_graph(ttl_file)
     elems = extract_elements(g)
 
