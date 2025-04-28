@@ -1,4 +1,5 @@
 from rdflib import Graph, RDF, RDFS, OWL, URIRef
+from rdflib.collection import Collection
 from collections import defaultdict, deque
 
 # --- Load Graph ---
@@ -22,6 +23,19 @@ def extract_elements(g):
     ]
     num_subclasses = len(subclass_triples)
 
+    # Expand owl:AllDisjointClasses into direct owl:disjointWith triples
+
+    extra_disjoints = set()
+    for bn in g.subjects(RDF.type, OWL.AllDisjointClasses):
+        members_node = next(g.objects(bn, OWL.members), None)
+        if members_node:
+            col = Collection(g, members_node)
+            items = list(col)
+            for a in items:
+                for b in items:
+                    if a != b and a in classes and b in classes:
+                        extra_disjoints.add((a, OWL.disjointWith, b))
+
     # Non-inheritance class-to-class relationships
     noninherit_rels = set(
         (s, p, o)
@@ -30,6 +44,7 @@ def extract_elements(g):
         and isinstance(o, URIRef) and o in classes
         and p != RDFS.subClassOf
     )
+    noninherit_rels |= extra_disjoints
     num_noninherit = len(noninherit_rels)
 
     # Object and Data Properties
@@ -152,7 +167,7 @@ def per_class_relationship_richness(g, classes, obj_props):
 
 # --- Main Script ---
 if __name__ == '__main__':
-    ttl_file = 'csws.ttl'
+    ttl_file = 'msws.ttl'
     g = load_graph(ttl_file)
     elems = extract_elements(g)
 
